@@ -1,0 +1,968 @@
+LMS Portal
+
+To create the topic test execution
+
+public ResponseEntity startTopicTestExecution(String studentId, String testQuestionSetId, Boolean retake) {
+        Optional<Student> student = studentRepository.findById(studentId);
+        if (student.isPresent()) {
+            Optional<TestQuestionsSet> testQuestionsSet = testQuestionsSetRepository.findById(testQuestionSetId);
+            if (testQuestionsSet.isPresent()) {
+                if (retake != null && retake) {
+                    String response = testExecutionRetake(student.get(), testQuestionsSet.get());
+                    if (response != null && response.equals("TestExecution Deleted")) {
+                        return startTestExecution2(student.get(), testQuestionsSet.get());
+                    } else {
+                        return new ResponseEntity<>(new ResponseWithoutDataModel(false, response), HttpStatus.BAD_REQUEST);
+                    }
+                } else {
+                    return startTestExecution2(student.get(), testQuestionsSet.get());
+                }
+            }
+            return new ResponseEntity<>(new ResponseWithoutDataModel(false, "TestQuestionsSet Not Found or Wrong"), HttpStatus.NOT_FOUND);
+        }
+        return new ResponseEntity<>(new ResponseWithoutDataModel(false, "Student Not Found or Wrong"), HttpStatus.NOT_FOUND);
+    }
+
+public ResponseEntity startTestExecution2(Student student, TestQuestionsSet testQuestionsSet) {
+        List<TestExecution> execution1 = testExecutionRepository.findByQuestionsSetAndTakenBy(testQuestionsSet, student);
+        if (execution1.isEmpty()) {
+            TestExecution execution = new TestExecution();
+            execution.setQuestionsSet(testQuestionsSet);
+
+            execution.setTakenBy(student);
+            execution.setRetake(false);
+            execution.setStartTime(Calendar.getInstance());
+            execution.setExamDate(new Date());
+            TestExecution testExecution1 = testExecutionRepository.save(execution);
+//           Initiate StudentQuestionSet
+            StudentQuestionsetStatus studentQuestionsetStatus = new StudentQuestionsetStatus();
+            studentQuestionsetStatus.setTestExecution(execution);
+            Question question1=questionRepository.findByTestSectionAndOrderNoOrderByOrderNo(execution.getQuestionsSet().getTestSection().get(0),1);
+            studentQuestionsetStatus.setQuestionId(question1.getId());
+            studentQuestionsetStatus.setStatus("InProgress");
+            studentQuestionsetStatusRepository.save(studentQuestionsetStatus);
+            if (testQuestionsSet.getName().equalsIgnoreCase("RecEnginePersonalityBasedSurveyApp")) {
+                TestExecution testExecution = testExecutionService.sortQuestionsByOrderId(execution);
+                return new ResponseEntity<>(testExecution, HttpStatus.OK);
+            }
+            TestQuestionSetModel testQuestionSetModel = TestQuestionSetToModel(testQuestionsSet);
+
+            if (execution != null && execution.getId() != null) {
+                testQuestionSetModel.setTestExecutionId(execution.getId());
+            }
+            if (testQuestionsSet.getTestSection() != null)
+                testQuestionSetModel.setTestSection(testQuestionsSet.getTestSection());
+            if (testQuestionsSet.getType().equals(TestQuestionsSet.TestType.CALIBRATION)) {
+                Product product = productRepository.findByName(execution.getQuestionsSet().getCourse().getName());
+                if (product != null) {
+                    StudentProduct studentProduct = studentProductRepository.findByStudentAndProduct(student, product);
+                    if (studentProduct != null) {
+                        Integer totalNoOfQuestion = 0;
+                        List<Answer> answerList3 = answerRepository.findByTestExecution(execution);
+                        for (TestSection testSection3 : execution.getQuestionsSet().getTestSection()) {
+                            totalNoOfQuestion += testSection3.getQuestions().size();
+                        }
+                        studentProduct.setStatus(0);
+                        studentProduct.setTestExecutionId(execution.getId());
+                        studentProduct.setTestQuestionSetId(testQuestionsSet.getId());
+                        studentProductRepository.save(studentProduct);
+                    }
+                }
+            }
+            QuestionTestExecutionModel questionTestExecutionModel = new QuestionTestExecutionModel();
+            List<TestSection> testSections = getTestSectionsByTestQuestionSetAndStudentOrderByOrderNo(testQuestionsSet, student);
+            if (testSections != null && !testSections.isEmpty() && testSections.get(0).getQuestions() != null) {
+                Question question2 = new Question();
+                for (Question question : testSections.get(0).getQuestions())
+                    if (question.getOrderNo() == 1) question2 = question;
+                if (ObjectUtils.isEmpty(question2)) {
+                    List<Question> questions = questionRepository.findByTestSectionOrderByOrderNo(testSections.get(0));
+                    if (!questions.isEmpty()) question2 = questions.get(0);
+                }
+                if (execution != null && execution.getId() != null) {
+                    testQuestionSetModel.setTestExecutionId(execution.getId());
+                    questionTestExecutionModel = setQuestionModelFromQuestion(question2, execution, true);
+                    Integer totalNoofQuestion = 0;
+                    for (TestSection testSection : testSections)
+                        if (testSection.getQuestions() != null) totalNoofQuestion += testSection.getQuestions().size();
+                    questionTestExecutionModel.setRemainingTime((long) (testSections.get(0).getDuration() * 60));
+
+                    testQuestionSetModel.setQuestion(questionTestExecutionModel);
+                }
+            }
+
+
+            return new ResponseEntity<>(new TestResponseModel(true, "TestExecution Created", false, questionTestExecutionModel), HttpStatus.OK);
+        } else {
+            TestExecution testExecution = execution1.get(0);
+            if (testExecution != null) {
+                if (testQuestionsSet.getType().equals(TestQuestionsSet.TestType.EVALUATION) && testQuestionsSet.getType().equals(TestQuestionsSet.TestType.SURVEY) && testQuestionsSet.getType().equals(TestQuestionsSet.TestType.SURVEYANDEVALUATION)) {
+                    JSONObject res = new JSONObject();
+                    res.put("testType", testQuestionsSet.getType());
+                    if (!(testExecution.getStatus() != null && testExecution.getStatus().equals("completed")))
+                        return new ResponseEntity<>(new ResponseModel(true, "You Complete the Test", res), HttpStatus.OK);
+                    else
+                        return new ResponseEntity<>(new ResponseModel(true, "You Already Taken the Test", res), HttpStatus.OK);
+                }
+            }
+            if (testExecution != null && !(testExecution.getStatus() != null && testExecution.getStatus().equals("completed"))) {
+                List<Answer> answerList = answerRepository.findByTestExecutionOrderByAnsweredTime(testExecution);
+                if (!answerList.isEmpty()) {
+                    Question question = answerList.get(answerList.size() - 1).getQuestion();
+                    Double totalTestSectionTime = question.getTestSection().getDuration() * 60;
+                    Integer time = testExecutionTrackRepository.findByTestExecutionAndTestSection(testExecution, question.getTestSection()).getRemainingTime();
+                    return getQuestionForTest4(student.getId(), question.getTestSection().getId(), question.getOrderNo(), testExecution.getId(), true);
+                } else {
+                    List<TestExecutionTrack> testExecutionTrack = testExecutionTrackRepository.findByTestExecutionOrderByUpdatedAtDesc(testExecution);
+                    if (testExecutionTrack != null && !testExecutionTrack.isEmpty()) {
+                        Double totalTestSectionTime = testExecutionTrack.get(0).getTestSection().getDuration() * 60;
+                        Integer time = testExecutionTrack.get(0).getRemainingTime();
+                        if (totalTestSectionTime != null) // && time != null && totalTestSectionTime > time
+                            return getQuestionForTest4(student.getId(), testExecutionTrack.get(0).getTestSection().getId(), 0, testExecution.getId(), true);
+                    } else {
+                        List<TestSection> testSections = getTestSectionsByTestQuestionSetAndStudentOrderByOrderNo(testQuestionsSet, student);
+                        ;
+                        if (testSections != null && !testSections.isEmpty() && testSections.get(0).getQuestions() != null) {
+                            TestQuestionSetModel testQuestionSetModel = new TestQuestionSetModel();
+                            Question question2 = null;
+                            List<Question> questions = testSections.get(0).getQuestions();
+                            if (!questions.isEmpty()) {
+                                questions.sort(Comparator.comparing(Question::getOrderNo));
+                                updateQuestionsOrderNo(questions);
+                                question2 = questions.get(0);
+                                if (testExecution != null && testExecution.getId() != null) {
+                                    testQuestionSetModel.setTestExecutionId(testExecution.getId());
+                                    QuestionTestExecutionModel questionTestExecutionModel = setQuestionModelFromQuestion(question2, testExecution, true);
+                                    Integer totalNoofQuestion = 0;
+                                    for (TestSection testSection : testSections)
+                                        if (testSection.getQuestions() != null)
+                                            totalNoofQuestion += testSection.getQuestions().size();
+                                    questionTestExecutionModel.setRemainingTime((long) (testSections.get(0).getDuration() * 60));
+
+                                    testQuestionSetModel.setQuestion(questionTestExecutionModel);
+                                    return new ResponseEntity<>(new TestResponseModel(true, "Test Question", false, questionTestExecutionModel), HttpStatus.OK);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return new ResponseEntity<>(new ResponseWithoutDataModel(true, "You already Complete the Test"), HttpStatus.OK);
+        }
+    }
+
+To get the report of test execution
+
+public ResponseEntity getTopicTestReport2(String studentId, String testExecutionId, Boolean isRetaken) {
+        Optional<Student> student = studentRepository.findById(studentId);
+        if (student.isPresent()) {
+            TestExecution testExecution = testExecutionRepository.findByTestExecutionId(testExecutionId);
+            if (testExecution != null) {
+                if (testExecution.getTakenBy().getId().equals(studentId)) {
+                    if ((testExecution.getQuestionsSet().getType().equals(TestQuestionsSet.TestType.TOPIC)) && testExecution.getStatus().equalsIgnoreCase("completed")) {
+                        return new ResponseEntity<>(new ResponseModel(true, "Topic Test Report",getTopicTestReport1(student.get(), testExecution,isRetaken)), HttpStatus.OK);
+                    } else if (testExecution.getQuestionsSet().getType().equals(TestQuestionsSet.TestType.OG_PRACTISETEST) && testExecution.getStatus().equalsIgnoreCase("completed")) {
+                        return new ResponseEntity<>(new ResponseModel(true, "Topic Test Report", getTopicTestReportDetails(student.get(), testExecution)), HttpStatus.OK);
+                    }
+                    return new ResponseEntity<>(new ResponseWithoutDataModel(false, "TestQuestionSet Not a TOPIC or Test Not Completed"), HttpStatus.BAD_REQUEST);
+                }
+                return new ResponseEntity<>(new ResponseWithoutDataModel(false, "This TestExecution Not For This Student"), HttpStatus.BAD_REQUEST);
+            }
+            return new ResponseEntity<>(new ResponseWithoutDataModel(false, "TestExecution Not Found"), HttpStatus.BAD_REQUEST);
+        }
+        return new ResponseEntity<>(new ResponseWithoutDataModel(false, "Student Not Found"), HttpStatus.BAD_REQUEST);
+    }
+    
+public JSONObject getTopicTestReport1(Student student, TestExecution testExecution,Boolean isRetaken) {
+        List<Answer> answerList = answerRepository.findByTestExecution(testExecution);
+//                        if (!answerList.isEmpty()){
+        JSONObject response = new JSONObject();
+        JSONObject insights = new JSONObject();
+        JSONObject donut = new JSONObject();
+        JSONArray cards = new JSONArray();
+        Integer totalQuestions = 0;
+        Long totalTimeSpend = null;
+        Long correctTimeSpend = null;
+        Long inCorrectTimeSpend = null;
+        Integer correctTimeSpendNo = 0;
+        Integer inCorrectTimeSpendNo = 0;
+        Integer correctQuestion = 0;
+        Integer inCorrectQuestion = 0;
+        if(isRetaken!=null&&!isRetaken) {
+            List<TestReports> testReport=testReportRepository.findByStudentIdAndTestQuestionsSetId(student.getId(),testExecution.getQuestionsSet().getId());
+            if(!testReport.isEmpty())
+            {
+                testReportRepository.deleteAll(testReport);
+                System.out.println("test report"+testReport);
+            }
+            TestReports reports=new TestReports();
+            JSONObject totalJson = scoreFromTestExecution1(answerList, testExecution);
+            totalTimeSpend = (Long) totalJson.get("TotalAnswerTimeInLong");
+            correctTimeSpend = (Long) totalJson.get("TotalCorrectQuestionTimeInLong");
+            inCorrectTimeSpend = (Long) totalJson.get("TotalInCorrectQuestionTimeInLong");
+            correctTimeSpendNo = (Integer) totalJson.get("TotalCorrectQuestionTimeNo");
+            inCorrectTimeSpendNo = (Integer) totalJson.get("TotalInCorrectQuestionTimeNo");
+            correctQuestion = (Integer) totalJson.get("TotalAnswerCorrect");
+            inCorrectQuestion = (Integer) totalJson.get("TotalAnswerInCorrect");
+            TestSection testSection = testSectionRepository.findFirstByTestQuestionsSetOrderByOrderNo(testExecution.getQuestionsSet());
+            if (testSection != null) {
+                totalQuestions = testSection.getQuestions().size();
+            }
+//        totalQuestions = testExecution.getQuestionsSet().getTestSection().get(0).getQuestions().size();
+            JSONObject card = new JSONObject();
+
+            card.put("title", "Average Time of all Questions");
+            JSONArray events = new JSONArray();
+            JSONObject event = new JSONObject();
+            event.put("icon", "Right");
+            event.put("title", "Correct Attempts");
+            if (correctTimeSpend != null) {
+//                            LocalTime localTime = new Time(correctTimeSpend).toLocalTime();
+                Integer localTimeFloat = correctTimeSpend.intValue();
+                LocalTime localTime = LocalTime.MIN.plusSeconds(localTimeFloat / correctQuestion);
+                //BigDecimal bd1 = new BigDecimal(localTimeFloat / correctQuestion).setScale(2, RoundingMode.HALF_EVEN);
+                if (localTime.getSecond() != 0) {
+                    event.put("time", (localTime.getMinute() + (localTime.getHour() * 60)) + ":" + localTime.getSecond());
+                    event.put("minutes", (localTime.getMinute() + (localTime.getHour() * 60)) + "." + localTime.getSecond());
+                    reports.setAverageCorrectAttemptTime((localTime.getMinute() + (localTime.getHour() * 60)) + ":" + localTime.getSecond());
+                    reports.setAverageCorrectAttemptMinutes((localTime.getMinute() + (localTime.getHour() * 60)) + "." + localTime.getSecond());
+                } else {
+                    event.put("time", (localTime.getMinute() + (localTime.getHour() * 60)));
+                    event.put("minutes", (localTime.getMinute() + (localTime.getHour() * 60)));
+                    reports.setAverageCorrectAttemptTime(String.valueOf((localTime.getMinute() + (localTime.getHour() * 60))));
+                    reports.setAverageCorrectAttemptMinutes(String.valueOf((localTime.getMinute() + (localTime.getHour() * 60))));
+                }
+            } else {
+                event.put("time", 0);
+                event.put("minutes", 0);
+                reports.setAverageCorrectAttemptTime(String.valueOf(0));
+                reports.setAverageCorrectAttemptMinutes(String.valueOf(0));
+            }
+            events.add(event);
+
+            event = new JSONObject();
+            event.put("icon", "Wrong");
+            event.put("title", "In Correct Attempts");
+            if (inCorrectTimeSpend != null) {
+                Integer localTimeFloat = inCorrectTimeSpend.intValue();
+                LocalTime localTime = LocalTime.MIN.plusSeconds(localTimeFloat / inCorrectQuestion);
+                if (localTime.getSecond() != 0) {
+                    event.put("time", (localTime.getMinute() + (localTime.getHour() * 60)) + ":" + localTime.getSecond());
+                    event.put("minutes", (localTime.getMinute() + (localTime.getHour() * 60)) + "." + localTime.getSecond());
+                    reports.setAverageInCorrectAttemptTime((localTime.getMinute() + (localTime.getHour() * 60)) + ":" + localTime.getSecond());
+                    reports.setAverageInCorrectAttemptMinutes((localTime.getMinute() + (localTime.getHour() * 60)) + "." + localTime.getSecond());
+                } else {
+                    event.put("time", (localTime.getMinute() + (localTime.getHour() * 60)));
+                    event.put("minutes", (localTime.getMinute() + (localTime.getHour() * 60)));
+                    reports.setAverageInCorrectAttemptTime(String.valueOf(localTime.getMinute() + (localTime.getHour() * 60)));
+                    reports.setAverageInCorrectAttemptMinutes(String.valueOf(localTime.getMinute() + (localTime.getHour() * 60)));
+                }
+            } else {
+                event.put("time", 0);
+                event.put("minutes", 0);
+                reports.setAverageInCorrectAttemptTime(String.valueOf(0));
+                reports.setAverageInCorrectAttemptMinutes(String.valueOf(0));
+            }
+            events.add(event);
+            card.put("events", events);
+
+            cards.add(card);
+
+
+            card = new JSONObject();
+            card.put("title", "Overall Time");
+            events = new JSONArray();
+            event = new JSONObject();
+            event.put("title", "Max time for exam");
+            event.put("time", testExecution.getQuestionsSet().getTestSection().get(0).getDuration().intValue());
+            event.put("minutes", testExecution.getQuestionsSet().getTestSection().get(0).getDuration().intValue());
+            reports.setOverallMaxTime(String.valueOf(testExecution.getQuestionsSet().getTestSection().get(0).getDuration().intValue()));
+            reports.setOverallMaxMinutes(String.valueOf(testExecution.getQuestionsSet().getTestSection().get(0).getDuration().intValue()));
+            events.add(event);
+
+            event = new JSONObject();
+            event.put("title", "Time Spent");
+            if (!testExecution.getQuestionsSet().getTestSection().isEmpty()) {
+                TestExecutionTrack testExecutionTrack = testExecutionTrackRepository.findByTestExecutionAndTestSection(testExecution, testExecution.getQuestionsSet().getTestSection().get(0));
+                if (testExecutionTrack != null) {
+                    if (testExecutionTrack.getRemainingTime() < (testExecution.getQuestionsSet().getTestSection().get(0).getDuration() * 60)) {
+                        Double time2 = Double.valueOf(((testExecution.getQuestionsSet().getTestSection().get(0).getDuration() * 60) - testExecutionTrack.getRemainingTime()) / 60);
+                        event.put("time", time2.intValue());
+                        event.put("minutes", time2.intValue());
+                        reports.setOverallSpentTime(String.valueOf(time2.intValue()));
+                        reports.setOverallSpentMinutes(String.valueOf(time2.intValue()));
+                    } else {
+                        event.put("time", testExecution.getQuestionsSet().getTestSection().get(0).getDuration().intValue());
+                        event.put("minutes", testExecution.getQuestionsSet().getTestSection().get(0).getDuration().intValue());
+                        reports.setOverallSpentTime(String.valueOf(testExecution.getQuestionsSet().getTestSection().get(0).getDuration().intValue()));
+                        reports.setOverallSpentMinutes(String.valueOf(testExecution.getQuestionsSet().getTestSection().get(0).getDuration().intValue()));
+                    }
+                } else {
+                    event.put("time", 0);
+                    event.put("minutes", 0);
+                    reports.setOverallSpentTime(String.valueOf(0));
+                    reports.setOverallSpentMinutes(String.valueOf(0));
+                }
+            } else {
+                event.put("time", 0);
+                event.put("minutes", 0);
+            }
+            events.add(event);
+            card.put("events", events);
+            cards.add(card);
+            insights.put("cards", cards);
+
+            donut.put("title", "Overall Score");
+            donut.put("totalQuestion", totalQuestions);
+            reports.setDonatTotalQuestions(totalQuestions);
+            donut.put("score", correctQuestion);
+            reports.setDonatScore(correctQuestion);
+            float correctQuestionFloat = correctQuestion;
+            float totalQuestionsFloat = totalQuestions;
+            donut.put("percentage", Math.round((correctQuestionFloat / totalQuestionsFloat) * 100));
+            reports.setDonatPercentage((double) Math.round((correctQuestionFloat / totalQuestionsFloat) * 100));
+            insights.put("donut", donut);
+            if (testExecution.getQuestionsSet().getTopic() != null) {
+                response.put("topicId", testExecution.getQuestionsSet().getTopic().getId());
+                reports.setTopicId(testExecution.getQuestionsSet().getTopic().getId());
+            }
+            if (testExecution.getQuestionsSet().getType().equals(TestQuestionsSet.TestType.TOPIC)) {
+                Integer easy = 0;
+                Integer medium = 0;
+                Integer hard = 0;
+                for (Question question1 : testExecution.getQuestionsSet().getTestSection().get(0).getQuestions()) {
+                    if (question1.getDifficultyLevel() != null) {
+                        if (question1.getDifficultyLevel().equals(Question.DifficultyLevelType.EASY)) easy++;
+                        if (question1.getDifficultyLevel().equals(Question.DifficultyLevelType.MEDIUM)) medium++;
+                        if (question1.getDifficultyLevel().equals(Question.DifficultyLevelType.HARD)) hard++;
+                    }
+                }
+                if (hard >= easy && hard >= medium) {
+                    response.put("title", "Hard");
+                    reports.setDifficultyLevelHard("Hard");
+                }
+                else if (medium >= easy && medium >= hard) {
+                    response.put("title", "Medium");
+                    reports.setDifficultyLevelMedium("Medium");
+                }
+                else {
+                    response.put("title", "Easy");
+                    reports.setDifficultyLevelEasy("Easy");
+                }
+            } else {
+                response.put("title", testExecution.getQuestionsSet().getName());
+                reports.setTopic(testExecution.getQuestionsSet().getName());
+            }
+            response.put("reportedDate", testExecution.getCompletedDate());
+            reports.setReportedDate(testExecution.getCompletedDate());
+            SimpleDateFormat sm = new SimpleDateFormat("dd MMM yyyy");
+            if (testExecution.getCompletedDate() != null){
+                response.put("reportedDateStr", sm.format(testExecution.getCompletedDate()));
+                reports.setReportedDateStr(sm.format(testExecution.getCompletedDate()));
+            }
+            else{
+                response.put("reportedDateStr", "");
+                reports.setReportedDateStr(null);
+            }
+            response.put("insights", insights);
+            response.put("review", courseReportReview2(testExecution));
+            String attemptedStatus = "";
+            String difficulty = "";
+            String quesNo = "";
+            String timeTaken = "";
+            String cumulativeTime="";
+            String topic="";
+            String concept="";
+            List<TestReportReviewModel> result = courseReportReviewDetails(testExecution);
+            for (TestReportReviewModel testExecutionList : result) {
+                if (attemptedStatus.equalsIgnoreCase("")) {
+                    attemptedStatus += testExecutionList.getAttemptStatus();
+                    difficulty+=testExecutionList.getDifficulty();
+                    quesNo+=testExecutionList.getQuesNo();
+                    timeTaken+=testExecutionList.getTimeTaken();
+                    cumulativeTime+=testExecutionList.getCumulativeTime();
+                    topic+=testExecutionList.getTopic();
+                    concept+=testExecutionList.getConcept();
+                }
+                else{
+                    attemptedStatus += ","+testExecutionList.getAttemptStatus();
+                    difficulty+=","+testExecutionList.getDifficulty();
+                    quesNo+=","+testExecutionList.getQuesNo();
+                    timeTaken+=","+testExecutionList.getTimeTaken();
+                    cumulativeTime+=","+testExecutionList.getCumulativeTime();
+                    topic+=","+testExecutionList.getTopic();
+                    concept+=","+testExecutionList.getConcept();
+                }
+            }
+
+            if (result.get(0) != null) {
+                reports.setTopic(result.get(0).getTopic());
+            }
+            reports.setAttemptedStatus(attemptedStatus);
+            reports.setDifficulty(difficulty);
+            reports.setQuesNo(quesNo);
+            reports.setTimeTaken(timeTaken);
+            reports.setCumulativeTime(cumulativeTime);
+            reports.setTopic(topic);
+            reports.setConcept(concept);
+            reports.setTitle(testExecution.getQuestionsSet().getName());
+            reports.setStudent(student);
+            reports.setTestExecution(testExecution);
+            reports.setTestQuestionsSet(testExecution.getQuestionsSet());
+            if(testExecution.getQuestionsSet().getType()== TestQuestionsSet.TestType.TOPIC)
+                testReportRepository.save(reports);
+            return response;
+        }
+        else {
+            System.out.println("retaken test");
+            return getOldTopicReport(student,testExecution);
+        }
+    }
+    
+private JSONObject getTopicTestReportDetails(Student student, TestExecution testExecution) {
+        List<Answer> answerList = answerRepository.findByTestExecution(testExecution);
+//                        if (!answerList.isEmpty()){
+        JSONObject response = new JSONObject();
+        JSONObject insights = new JSONObject();
+        JSONObject donut = new JSONObject();
+        JSONArray cards = new JSONArray();
+        Integer totalQuestions = 0;
+        Long totalTimeSpend = null;
+        Long correctTimeSpend = null;
+        Long inCorrectTimeSpend = null;
+        Integer correctTimeSpendNo = 0;
+        Integer inCorrectTimeSpendNo = 0;
+        Integer correctQuestion = 0;
+        Integer inCorrectQuestion = 0;
+        TestReports reports = new TestReports();
+
+        JSONObject totalJson = scoreFromTestExecution1(answerList, testExecution);
+        totalTimeSpend = (Long) totalJson.get("TotalAnswerTimeInLong");
+        correctTimeSpend = (Long) totalJson.get("TotalCorrectQuestionTimeInLong");
+        inCorrectTimeSpend = (Long) totalJson.get("TotalInCorrectQuestionTimeInLong");
+        correctTimeSpendNo = (Integer) totalJson.get("TotalCorrectQuestionTimeNo");
+        inCorrectTimeSpendNo = (Integer) totalJson.get("TotalInCorrectQuestionTimeNo");
+        correctQuestion = (Integer) totalJson.get("TotalAnswerCorrect");
+        inCorrectQuestion = (Integer) totalJson.get("TotalAnswerInCorrect");
+        TestSection testSection = testSectionRepository.findFirstByTestQuestionsSetOrderByOrderNo(testExecution.getQuestionsSet());
+        if (testSection != null) {
+            totalQuestions = testSection.getQuestions().size();
+        }
+        if(testExecution.getQuestionsSet().getCourse().getName().equalsIgnoreCase("GMAT OG")){
+            List<TestFilterQuestions> questions=testFilterQuestionRepository.findBytestFilterTestExecution(testExecution);
+            totalQuestions=questions.size();
+        }
+//        totalQuestions = testExecution.getQuestionsSet().getTestSection().get(0).getQuestions().size();
+        JSONObject card = new JSONObject();
+
+        card.put("title", "Average Time of all Questions");
+//        JSONArray events = new JSONArray();
+
+        JSONObject event = new JSONObject();
+//        event.put("icon", "Right");
+
+        event.put("title", "Average Time of all Questions");
+        Integer correctTime = 0;
+        Integer incorrectTime = 0;
+        if (correctTimeSpend != null)
+            correctTime = correctTimeSpend.intValue();
+        if (inCorrectTimeSpend != null)
+            incorrectTime = inCorrectTimeSpend.intValue();
+        Integer localTimeFloat = correctTime + incorrectTime;
+        Integer questions1 = correctQuestion + inCorrectQuestion;
+        if (localTimeFloat != null) {
+            LocalTime localTime = LocalTime.MIN.plusSeconds(localTimeFloat / questions1);
+            if (localTime.getSecond() != 0) {
+                event.put("time", (localTime.getMinute() + (localTime.getHour() * 60)) + ":" + localTime.getSecond());
+                event.put("minutes", (localTime.getMinute() + (localTime.getHour() * 60)) + "." + localTime.getSecond());
+                reports.setAverageCorrectAttemptTime((localTime.getMinute() + (localTime.getHour() * 60)) + ":" + localTime.getSecond());
+                reports.setAverageCorrectAttemptMinutes((localTime.getMinute() + (localTime.getHour() * 60)) + "." + localTime.getSecond());
+            } else {
+                event.put("time", (localTime.getMinute() + (localTime.getHour() * 60)));
+                event.put("minutes", (localTime.getMinute() + (localTime.getHour() * 60)));
+                reports.setAverageCorrectAttemptTime(String.valueOf((localTime.getMinute() + (localTime.getHour() * 60))));
+                reports.setAverageCorrectAttemptMinutes(String.valueOf((localTime.getMinute() + (localTime.getHour() * 60))));
+            }
+        } else {
+            event.put("time", 0);
+            event.put("minutes", 0);
+            reports.setAverageCorrectAttemptTime("0");
+            reports.setAverageCorrectAttemptMinutes("0");
+        }
+        insights.put("time", event);
+        String easy = "";
+        String medium = "";
+        String hard = "";
+
+        JSONArray questions = new JSONArray();
+        List<Question> easyQuestionList=new ArrayList<>();
+        if(testExecution.getQuestionsSet().getCourse().getName().equalsIgnoreCase("GMAT OG")) {
+            List<TestFilterQuestions> questions2=testFilterQuestionRepository.findByTestFilterTestExecutionAndQuestionDifficultyLevel(testExecution,EASY);
+            for(TestFilterQuestions questions3:questions2){
+                easyQuestionList.add(questions3.getQuestion());
+            }
+        }
+        else{
+            easyQuestionList = questionRepository.findByTestQuestionsSetAndDifficultyLevel(testExecution.getQuestionsSet(), EASY);
+        }
+        event = new JSONObject();
+        float totalNoOfQuestions = 0;
+        float attemptedQuestions = 0;
+        Double percentage;
+        totalNoOfQuestions = easyQuestionList.size();
+        reports.setDonatTotalQuestions(totalQuestions);
+        for (Question easyQuestion : easyQuestionList) {
+            if (scoreRepository.existsByTestExecutionAndQuestionAndScore(testExecution, easyQuestion, 1)) {
+                attemptedQuestions++;
+            }
+        }
+        event.put("name", "EASY");
+        event.put("score", Math.round(attemptedQuestions) + "/" + Math.round(totalNoOfQuestions));
+        if (totalNoOfQuestions != 0) {
+            event.put("percentage", Math.round((attemptedQuestions / totalNoOfQuestions) * 100));
+        } else {
+            event.put("percentage", 0);
+        }
+        easy = event.getAsString("name") + "," + event.getAsString("score") + "," + event.getAsString("percentage");
+        questions.add(event);
+        List<Question> mediumQuestionList=new ArrayList<>();
+        if(testExecution.getQuestionsSet().getCourse().getName().equalsIgnoreCase("GMAT OG")) {
+            List<TestFilterQuestions> questions2=testFilterQuestionRepository.findByTestFilterTestExecutionAndQuestionDifficultyLevel(testExecution,MEDIUM);
+            for(TestFilterQuestions questions3:questions2){
+                mediumQuestionList.add(questions3.getQuestion());
+            }
+        }
+        else {
+            mediumQuestionList = questionRepository.findByTestQuestionsSetAndDifficultyLevel(testExecution.getQuestionsSet(), MEDIUM);
+        }
+        event = new JSONObject();
+        attemptedQuestions = 0;
+        totalNoOfQuestions = mediumQuestionList.size();
+        for (Question mediumQuestion : mediumQuestionList) {
+            if (scoreRepository.existsByTestExecutionAndQuestionAndScore(testExecution, mediumQuestion, 1)) {
+                attemptedQuestions++;
+            }
+        }
+        event.put("name", "MEDIUM");
+        event.put("score", Math.round(attemptedQuestions) + "/" + Math.round(totalNoOfQuestions));
+        if (totalNoOfQuestions != 0) {
+            event.put("percentage", Math.round((attemptedQuestions / totalNoOfQuestions) * 100));
+        } else {
+            event.put("percentage", 0);
+        }
+        medium = event.getAsString("name") + "," + event.getAsString("score") + "," + event.getAsString("percentage");
+        questions.add(event);
+        List<Question> hardQuestionList=new ArrayList<>();
+        if(testExecution.getQuestionsSet().getCourse().getName().equalsIgnoreCase("GMAT OG")) {
+            List<TestFilterQuestions> questions2=testFilterQuestionRepository.findByTestFilterTestExecutionAndQuestionDifficultyLevel(testExecution,HARD);
+            for(TestFilterQuestions questions3:questions2){
+                hardQuestionList.add(questions3.getQuestion());
+            }
+        }
+        else {
+            hardQuestionList = questionRepository.findByTestQuestionsSetAndDifficultyLevel(testExecution.getQuestionsSet(), HARD);
+        }
+        event = new JSONObject();
+        attemptedQuestions = 0;
+        totalNoOfQuestions = hardQuestionList.size();
+        for (Question hardQuestion : hardQuestionList) {
+            if (scoreRepository.existsByTestExecutionAndQuestionAndScore(testExecution, hardQuestion, 1)) {
+                attemptedQuestions++;
+            }
+        }
+        event.put("name", "HARD");
+        event.put("score", Math.round(attemptedQuestions) + "/" + Math.round(totalNoOfQuestions));
+        if (totalNoOfQuestions != 0) {
+            event.put("percentage", Math.round((attemptedQuestions / totalNoOfQuestions) * 100));
+        } else {
+            event.put("percentage", 0);
+        }
+        hard = event.getAsString("name") + "," + event.getAsString("score") + "," + event.getAsString("percentage");
+        questions.add(event);
+        insights.put("difficultyLevel", questions);
+        reports.setDifficultyLevelEasy(easy);
+        reports.setDifficultyLevelMedium(medium);
+        reports.setDifficultyLevelHard(hard);
+//        object.put("value",questions);
+//        cards.add(object);
+        JSONArray sections = new JSONArray();
+        float quantAttemptedQuestion = 0;
+        float quantTotalQuestion = 0;
+        float verbalTotalQuestion = 0;
+        float verbalAttemptedQuestion = 0;
+        List<Question> quantQuestionList=new ArrayList<>();
+        if(testExecution.getQuestionsSet().getCourse().getName().equalsIgnoreCase("GMAT OG")) {
+            List<TestFilterQuestions> questions2=testFilterQuestionRepository.findByTestFilterTestExecutionAndQuestionTopicConceptSubjectName(testExecution,"Quant");
+            for(TestFilterQuestions questions3:questions2){
+                quantQuestionList.add(questions3.getQuestion());
+            }
+        }
+        else{
+            quantQuestionList = questionRepository.findByTestQuestionsSetAndTopicConceptSubjectName(testExecution.getQuestionsSet(), "Quant");
+        }
+        quantTotalQuestion = quantQuestionList.size();
+        event = new JSONObject();
+        for (Question quantQuestion : quantQuestionList) {
+            if (scoreRepository.existsByTestExecutionAndQuestionAndScore(testExecution, quantQuestion, 1)) {
+                quantAttemptedQuestion++;
+            }
+        }
+        event.put("name", "Quant");
+        event.put("score", Math.round(quantAttemptedQuestion) + "/" + Math.round(quantTotalQuestion));
+        if (quantTotalQuestion != 0) {
+            event.put("percentage", Math.round((quantAttemptedQuestion / quantTotalQuestion) * 100));
+        } else {
+            event.put("percentage", 0);
+        }
+        reports.setQuantSubject(event.getAsString("name") + "," + event.getAsString("score") + "," + event.getAsString("percentage"));
+        sections.add(event);
+        List<Question> verbalQuestionList=new ArrayList<>();
+        if(testExecution.getQuestionsSet().getCourse().getName().equalsIgnoreCase("GMAT OG")) {
+            List<TestFilterQuestions> questions2=testFilterQuestionRepository.findByTestFilterTestExecutionAndQuestionTopicConceptSubjectName(testExecution,"Verbal");
+            for(TestFilterQuestions questions3:questions2){
+                verbalQuestionList.add(questions3.getQuestion());
+            }
+        }
+        else{
+            verbalQuestionList = questionRepository.findByTestQuestionsSetAndTopicConceptSubjectName(testExecution.getQuestionsSet(), "Verbal");
+        }
+        verbalTotalQuestion = verbalQuestionList.size();
+        event = new JSONObject();
+        for (Question verbalQuestion : verbalQuestionList) {
+            if (scoreRepository.existsByTestExecutionAndQuestionAndScore(testExecution, verbalQuestion, 1)) {
+                verbalAttemptedQuestion++;
+            }
+        }
+        event.put("name", "Verbal");
+        event.put("score", Math.round(verbalAttemptedQuestion) + "/" + Math.round(verbalTotalQuestion));
+        if (verbalTotalQuestion != 0) {
+            event.put("percentage", Math.round((verbalAttemptedQuestion / verbalTotalQuestion) * 100));
+        } else {
+            event.put("percentage", 0);
+        }
+        reports.setVerbalSubject(event.getAsString("name") + "," + event.getAsString("score") + "," + event.getAsString("percentage"));
+        sections.add(event);
+        insights.put("subjects", sections);
+        donut.put("title", "Overall Correct Attempt");
+        donut.put("totalQuestion", totalQuestions);
+        donut.put("score", correctQuestion);
+        reports.setDonatScore(correctQuestion);
+        float correctQuestionFloat = correctQuestion;
+        float totalQuestionsFloat = totalQuestions;
+        donut.put("percentage", Math.round((correctQuestionFloat / totalQuestionsFloat) * 100));
+        reports.setDonatPercentage(Double.valueOf(Math.round((correctQuestionFloat / totalQuestionsFloat) * 100)));
+        insights.put("donut", donut);
+        if (testExecution.getQuestionsSet().getTopic() != null)
+            response.put("topicId", testExecution.getQuestionsSet().getTopic().getId());
+
+        if(testExecution.getQuestionsSet().getCourse().getName().equalsIgnoreCase("GRE OG")) {
+            response.put("title", testExecution.getQuestionsSet().getName());
+        }
+        else
+            response.put("title",testExecution.getTitle());
+        response.put("reportedDate", testExecution.getCompletedDate());
+        reports.setReportedDate(testExecution.getCompletedDate());
+        SimpleDateFormat sm = new SimpleDateFormat("dd MMM yyyy");
+        if (testExecution.getCompletedDate() != null) {
+            response.put("reportedDateStr", sm.format(testExecution.getCompletedDate()));
+            reports.setReportedDateStr(sm.format(testExecution.getCompletedDate()));
+        } else {
+            response.put("reportedDateStr", "");
+            reports.setReportedDateStr(" ");
+        }
+        response.put("insights", insights);
+        response.put("errorLog", courseReportReviewDetails(testExecution));
+        System.out.println(testExecution.getQuestionsSet().getCourse().getName());
+        if (testExecution.getQuestionsSet().getCourse().getName().equalsIgnoreCase("GMAT OG")) {
+            System.out.println("hi");
+            response.put("GMATOG", subjectReview(testExecution,reports));
+        }
+        String attemptedStatus = "";
+        String section = "";
+        String correctAnswer = "";
+        String difficulty = "";
+        String quesNo = "";
+        String timeTaken = "";
+        String topic="";
+        String concept="";
+        List<TestReportReviewModel> result = courseReportReviewDetails(testExecution);
+        for (TestReportReviewModel testExecutionList : result) {
+            if (attemptedStatus.equalsIgnoreCase("")) {
+                attemptedStatus += testExecutionList.getAttemptStatus();
+                if(testExecutionList.getSection()!=null)
+                    section += testExecutionList.getSection();
+                else
+                    section+="-";
+                correctAnswer += testExecutionList.getCorrectAnswer();
+                difficulty+=testExecutionList.getDifficulty();
+                quesNo+=testExecutionList.getQuesNo();
+                timeTaken+=testExecutionList.getTimeTaken();
+                topic+=testExecutionList.getTopic();
+                concept+=testExecutionList.getConcept();
+            }
+            else{
+                attemptedStatus += "#"+testExecutionList.getAttemptStatus();
+                if(testExecutionList.getSection()!=null)
+                    section += "#"+testExecutionList.getSection();
+                else
+                    section+= "#-";
+                correctAnswer += "#"+testExecutionList.getCorrectAnswer();
+                difficulty+="#"+testExecutionList.getDifficulty();
+                quesNo+="#"+testExecutionList.getQuesNo();
+                timeTaken+="#"+testExecutionList.getTimeTaken();
+                topic+="#"+testExecutionList.getTopic();
+                concept+="#"+testExecutionList.getConcept();
+            }
+        }
+
+        if (result.get(0) != null) {
+            reports.setTopic(result.get(0).getTopic());
+        }
+        reports.setAttemptedStatus(attemptedStatus);
+        reports.setSection(section);
+        reports.setCorrectAnswer(correctAnswer);
+        reports.setDifficulty(difficulty);
+        reports.setQuesNo(quesNo);
+        reports.setTimeTaken(timeTaken);
+        if(testExecution.getQuestionsSet().getCourse().getName().equalsIgnoreCase("GRE OG"))
+            reports.setTitle(testExecution.getQuestionsSet().getName());
+        else
+            reports.setTitle(testExecution.getTitle());
+        reports.setTopic(topic);
+        reports.setConcept(concept);
+        reports.setStudent(student);
+        reports.setTestExecution(testExecution);
+        List<TestReports> testReports=testReportRepository.findByStudentAndTestExecution(student,testExecution);
+        if(testReports.isEmpty()) {
+            testReportRepository.save(reports);
+        }
+        return response;
+    }        
+        
+To get the answers of test question set
+
+public ResponseEntity getTestQuestionSetQuestionAnswer(String studentId, String testQuestionSetId, String questionId) throws IOException {
+
+        Optional<Student> student = studentRepository.findById(studentId);
+        if (student.isPresent()) {
+            Optional<TestQuestionsSet> testQuestionsSet = testQuestionsSetRepository.findById(testQuestionSetId);
+            if (testQuestionsSet.isPresent()) {
+                Optional<Question> question = questionRepository.findById(questionId);
+                if (question.isPresent()) {
+                    List<TestExecution> testExecution = testExecutionRepository.findByQuestionsSetAndTakenBy(testQuestionsSet.get(), student.get());
+                    if (!testExecution.isEmpty()) {
+                        return new ResponseEntity<>(new ResponseModel(true, "Correct Answer", getQuestionAnswer(question.get(), testExecution.get(0))), HttpStatus.OK);
+                    }
+                    return new ResponseEntity<>(new ResponseWithoutDataModel(false, "TestExecution Not Started"), HttpStatus.BAD_REQUEST);
+                }
+                return new ResponseEntity<>(new ResponseWithoutDataModel(false, "Question Not Found"), HttpStatus.BAD_REQUEST);
+            }
+            return new ResponseEntity<>(new ResponseWithoutDataModel(false, "TestQuestionsSet Not Found"), HttpStatus.BAD_REQUEST);
+        }
+        return new ResponseEntity<>(new ResponseWithoutDataModel(false, "Student Not Found"), HttpStatus.BAD_REQUEST);
+    }
+    
+To get the details of test question set
+
+public ResponseEntity getTestQuestionSetDetails(String studentId, String topicId, String type, String difficultyLevel, String status, String questionType ,String conceptId,String subjectId,String productId) {
+        Optional<Student> student = studentRepository.findById(studentId);
+        if (student.isPresent()) {
+            Optional<Topic> topic = topicRepository.findById(topicId);
+            if (topic.isPresent()) {
+                if (type.equalsIgnoreCase("QUESTIONBANK")) {
+                    Optional<TestQuestionsSet> testQuestionsSetList = testQuestionsSetRepository.findFirstByTopicAndTypeAndWkStatusValue(topic.get(), TestQuestionsSet.TestType.QUESTIONBANK, "Live");
+                    if (testQuestionsSetList.isPresent()) {
+                        JSONObject response = new JSONObject();
+                        response.put("concept", topic.get().getConcept().getName());
+                        response.put("subject", topic.get().getConcept().getSubject().getName());
+                        List<JSONObject> objects= getTestQuestionSetDetailsForQB(student.get(), testQuestionsSetList.get(), difficultyLevel, status, topic.get(), questionType);
+                        if(objects!=null && !objects.isEmpty()) {
+                            response.put("questions", objects);
+                            response.put("totalNoOfQuestions", objects.size());
+                        }
+                        else{
+                            response.put("questions", new JSONArray());
+                            response.put("totalNoOfQuestions", 0);
+                        }
+                        return new ResponseEntity(new ResponseModel(true,"question bank test details",response),HttpStatus.OK);
+                    }
+                    else {
+                        JSONObject response = new JSONObject();
+                        response.put("totalNoOfQuestions", 0);
+                        response.put("questions", new JSONArray());
+                        response.put("concept", topic.get().getConcept().getName());
+                        response.put("subject", topic.get().getConcept().getSubject().getName());
+                        return new ResponseEntity<>(new ResponseModel(true, "No Questions found", response), HttpStatus.OK);
+                    }
+                } else if (type.equalsIgnoreCase("TOPIC")) {
+                    List<TestQuestionsSet> testQuestionsSetList = testQuestionsSetRepository.findByTopicAndTypeAndWkStatusValueOrderByName(topic.get(), TestQuestionsSet.TestType.TOPIC, "Live");
+                    if (!testQuestionsSetList.isEmpty()) {
+                        return getTestQuestionSetDetailsForTopics(student.get(), testQuestionsSetList);
+                    }
+                    return new ResponseEntity<>(new ResponseModel(true, "Topic Test Not Found", new JSONArray()), HttpStatus.OK);
+                }
+                return new ResponseEntity<>(new ResponseModel(false, "Given type is wrong", null), HttpStatus.BAD_REQUEST);
+            }
+            else if(conceptId!=null){
+                if (type.equalsIgnoreCase("QUESTIONBANK")) {
+                    List<JSONObject> jsonObjects = new ArrayList<>();
+                    Optional<Concept> concept = conceptRepository.findById(conceptId);
+                    if(concept.isPresent()){
+                        List<TestQuestionsSet> testQuestionsSetList = testQuestionsSetRepository.findByTopicConceptAndTypeAndWkStatusValue(concept.get(), TestQuestionsSet.TestType.QUESTIONBANK, "Live");
+                        if (!testQuestionsSetList.isEmpty()) {
+                            for (TestQuestionsSet questionsSet : testQuestionsSetList) {
+                                List<JSONObject> objects = getTestQuestionSetDetailsForQB(student.get(), questionsSet, difficultyLevel, status, questionsSet.getTopic(), questionType);
+                                if (objects != null && !objects.isEmpty()) {
+                                    jsonObjects.addAll(objects);
+                                }
+                            }
+                            JSONObject response = new JSONObject();
+                            response.put("concept", concept.get().getName());
+                            response.put("subject", concept.get().getSubject().getName());
+                            if (jsonObjects != null && !jsonObjects.isEmpty()) {
+                                response.put("questions", jsonObjects);
+                                response.put("totalNoOfQuestions", jsonObjects.size());
+                            } else {
+                                response.put("questions", new JSONArray());
+                                response.put("totalNoOfQuestions", 0);
+                            }
+                            return new ResponseEntity(new ResponseModel(true, "question bank test details", response), HttpStatus.OK);
+                        } else {
+                            JSONObject response = new JSONObject();
+                            response.put("totalNoOfQuestions", 0);
+                            response.put("questions", new JSONArray());
+                            response.put("concept", concept.get().getName());
+                            response.put("subject", concept.get().getSubject().getName());
+                            return new ResponseEntity<>(new ResponseModel(true, "TestQuestionsSet Not Found", response), HttpStatus.OK);
+                        }
+                    }
+                    else{
+                        Optional<Subject> subject=subjectRepository.findById(subjectId);
+                        if(subject.isPresent()){
+                            List<TestQuestionsSet> testQuestionsSetList = testQuestionsSetRepository.findByTopicConceptSubjectAndTypeAndWkStatusValue(subject.get(), TestQuestionsSet.TestType.QUESTIONBANK, "Live");
+                            if (!testQuestionsSetList.isEmpty()) {
+                                for (TestQuestionsSet questionsSet : testQuestionsSetList) {
+                                    List<JSONObject> objects = getTestQuestionSetDetailsForQB(student.get(), questionsSet, difficultyLevel, status, questionsSet.getTopic(), questionType);
+                                    if (objects != null && !objects.isEmpty()) {
+                                        jsonObjects.addAll(objects);
+                                    }
+                                }
+                                JSONObject response = new JSONObject();
+                                response.put("concept", "All");
+                                response.put("subject", subject.get().getName());
+                                if (jsonObjects != null && !jsonObjects.isEmpty()) {
+                                    response.put("questions", jsonObjects);
+                                    response.put("totalNoOfQuestions", jsonObjects.size());
+                                } else {
+                                    response.put("questions", new JSONArray());
+                                    response.put("totalNoOfQuestions", 0);
+                                }
+                                return new ResponseEntity(new ResponseModel(true, "question bank test details", response), HttpStatus.OK);
+                            } else {
+                                JSONObject response = new JSONObject();
+                                response.put("totalNoOfQuestions", 0);
+                                response.put("questions", new JSONArray());
+                                response.put("concept", "All");
+                                response.put("subject", subject.get().getName());
+                                return new ResponseEntity<>(new ResponseModel(true, "TestQuestionsSet Not Found", response), HttpStatus.OK);
+                            }
+                        }
+                        else {
+                            Optional<Product> product = productRepository.findById(productId);
+                            if (product.isPresent()) {
+                                Course course = courseRepository.findByName(product.get().getName());
+                                List<TestQuestionsSet> testQuestionsSetList = testQuestionsSetRepository.findByTypeAndCourseAndWkStatusValue(TestQuestionsSet.TestType.QUESTIONBANK, course, "Live");
+                                if (!testQuestionsSetList.isEmpty()) {
+                                    for (TestQuestionsSet questionsSet : testQuestionsSetList) {
+                                        List<JSONObject> objects = getTestQuestionSetDetailsForQB(student.get(), questionsSet, difficultyLevel, status, questionsSet.getTopic(), questionType);
+                                        if (objects != null && !objects.isEmpty()) {
+                                            jsonObjects.addAll(objects);
+                                        }
+                                    }
+                                    JSONObject response = new JSONObject();
+                                    response.put("concept", "All");
+                                    response.put("subject", "All");
+                                    if (jsonObjects != null && !jsonObjects.isEmpty()) {
+                                        response.put("questions", jsonObjects);
+                                        response.put("totalNoOfQuestions", jsonObjects.size());
+                                    } else {
+                                        response.put("questions", new JSONArray());
+                                        response.put("totalNoOfQuestions", 0);
+                                    }
+                                    return new ResponseEntity(new ResponseModel(true, "question bank test details", response), HttpStatus.OK);
+                                } else {
+                                    JSONObject response = new JSONObject();
+                                    response.put("totalNoOfQuestions", 0);
+                                    response.put("questions", new JSONArray());
+                                    response.put("concept", "All");
+                                    response.put("subject", "All");
+                                    return new ResponseEntity<>(new ResponseModel(true, "TestQuestionsSet Not Found", response), HttpStatus.OK);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return new ResponseEntity<>(new ResponseModel(false, "Topic Not Found", null), HttpStatus.BAD_REQUEST);
+        }
+        return new ResponseEntity<>(new ResponseModel(false, "Student Not Found", null), HttpStatus.BAD_REQUEST);
+    }
+    
+To get the questions of given question set  
+
+public ResponseEntity getTestQuestionSetQuestion(String studentId, String testQuestionSetId, String questionId, String type) {
+        Optional<Student> student = studentRepository.findById(studentId);
+        if (student.isPresent()) {
+            Optional<TestQuestionsSet> testQuestionsSet = testQuestionsSetRepository.findById(testQuestionSetId);
+            if (testQuestionsSet.isPresent()) {
+                Optional<Question> question = questionRepository.findById(questionId);
+                if (question.isPresent()) {
+                    TestExecution _testExecution = new TestExecution();
+                    if (question.get().getTestQuestionsSet().get(0).getType().equals(TestQuestionsSet.TestType.QUESTIONBANK)) {
+                        List<Answer> answers = answerRepository.findByQuestionOrderByAnsweredTimeDesc(question.get());
+                        if (answers.isEmpty()) {
+                            TestExecution testExecution = new TestExecution();
+                            testExecution.setTakenBy(student.get());
+                            testExecution.setQuestionsSet(testQuestionsSet.get());
+                            testExecution.setExamDate(new Date());
+                            _testExecution = testExecutionRepository.save(testExecution);
+                        } else {
+                            _testExecution = answers.get(0).getTestExecution();
+                        }
+                        QuestionTestExecutionModel questionTestExecutionModel = setQuestionModelFromQuestion(question.get(), _testExecution, true);
+                        questionTestExecutionModel.setTotalNoOfQuestion(question.get().getTestQuestionsSet().get(0).getQuestions().size());
+                        return new ResponseEntity<>(new ResponseModel(true, "Question", questionTestExecutionModel), HttpStatus.OK);
+                    }
+                    else{
+                        List<TestExecution> testExecutionList = testExecutionRepository.findByQuestionsSetAndTakenBy(testQuestionsSet.get(), student.get());
+                    if (testExecutionList.isEmpty()) {
+                        TestExecution testExecution = new TestExecution();
+                        testExecution.setTakenBy(student.get());
+                        testExecution.setQuestionsSet(testQuestionsSet.get());
+                        testExecution.setExamDate(new Date());
+                        _testExecution = testExecutionRepository.save(testExecution);
+                        StudentQuestionsetStatus studentQuestionsetStatus = new StudentQuestionsetStatus();
+                        studentQuestionsetStatus.setTestExecution(_testExecution);
+                        studentQuestionsetStatus.setQuestionId(_testExecution.getQuestionsSet().getQuestions().get(0).getId());
+                        studentQuestionsetStatus.setStatus("InProgress");
+                        studentQuestionsetStatusRepository.save(studentQuestionsetStatus);
+                    } else {
+                        _testExecution = testExecutionList.get(0);
+                        List<Answer> answerList = answerRepository.findByQuestionAndTestExecution(question.get(), _testExecution);
+                        if (type == null) {
+                            if (!answerList.isEmpty())
+                                return new ResponseEntity<>(new ResponseModel(false, "Question already answered", new JSONObject()), HttpStatus.ALREADY_REPORTED);
+                        }
+                    }
+                    QuestionTestExecutionModel questionTestExecutionModel = setQuestionModelFromQuestion(question.get(), _testExecution, true);
+                    questionTestExecutionModel.setTotalNoOfQuestion(testQuestionsSet.get().getQuestions().size());
+                    return new ResponseEntity<>(new ResponseModel(true, "Question", questionTestExecutionModel), HttpStatus.OK);
+                }
+                }
+                return new ResponseEntity<>(new ResponseWithoutDataModel(false, "Question Not Found"), HttpStatus.BAD_REQUEST);
+            }
+            return new ResponseEntity<>(new ResponseWithoutDataModel(false, "TestQuestionsSet Not Found"), HttpStatus.BAD_REQUEST);
+        }
+        return new ResponseEntity<>(new ResponseWithoutDataModel(false, "Student Not Found"), HttpStatus.BAD_REQUEST);
+    }
+
