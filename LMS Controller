@@ -1,0 +1,64 @@
+LMS Portal
+
+To create the topic test execution
+
+@PostMapping("/students/{studentId}/testQuestionSet/{testQuestionSetId}/testExecutions")
+    public ResponseEntity startTopicTestExecution(@PathVariable String studentId, @PathVariable String testQuestionSetId, Boolean retake) {
+        try {
+            return lmsStudentService.startTopicTestExecution(studentId, testQuestionSetId, retake);
+        } catch (Exception e) {
+            e.printStackTrace();
+            return new ResponseEntity<>(null, HttpStatus.EXPECTATION_FAILED);
+        }
+    }
+
+To get the report of test execution
+
+@GetMapping("/students/{studentId}/testExecution/{testExecutionId}/topicTestReport")
+    public ResponseEntity getTopicTestReport(@PathVariable String studentId,
+                                             @PathVariable String testExecutionId,
+                                             @RequestParam(required = false) Boolean isRetaken) {
+        try {
+            return lmsStudentService.getTopicTestReport2(studentId, testExecutionId,isRetaken);
+        } catch (Exception e) {
+            e.printStackTrace();
+            return new ResponseEntity<>(null, HttpStatus.EXPECTATION_FAILED);
+        }
+    }
+    
+To get the answers of test question set
+    
+@GetMapping("/students/{studentId}/testQuestionSet/{testQuestionSetId}/question/{questionId}/answer")
+    public ResponseEntity getTestQuestionSetQuestionAnswer(@PathVariable String studentId, @PathVariable String testQuestionSetId, @PathVariable String questionId) {
+        try {
+            return lmsStudentService.getTestQuestionSetQuestionAnswer(studentId, testQuestionSetId, questionId);
+        } catch (Exception e) {
+            e.printStackTrace();
+            return new ResponseEntity<>(new ResponseModel(false, e.getMessage(), new JSONArray()), HttpStatus.EXPECTATION_FAILED);
+        }
+    }
+    
+To get the details of test question set
+    
+@GetMapping("/students/{studentId}/topic/{topicId}/testQuestionSet")
+    public ResponseEntity getTestQuestionSetDetails(@PathVariable String studentId, @PathVariable String topicId, @RequestParam String type, String difficultyLevel, String status, String questionType,@RequestParam(required = false) String conceptId,@RequestParam(required = false) String subjectId,@RequestParam(required = false) String productId) {
+        try {
+            return lmsStudentService.getTestQuestionSetDetails(studentId, topicId, type, difficultyLevel, status, questionType,conceptId,subjectId,productId);
+        } catch (Exception e) {
+            e.printStackTrace();
+            return new ResponseEntity<>(new ResponseModel(false, e.getMessage(), new JSONArray()), HttpStatus.EXPECTATION_FAILED);
+        }
+    }  
+    
+To get the questions of given question set  
+    
+@PostMapping("/students/{studentId}/testQuestionSet/{testQuestionSetId}/question/{questionId}")
+    public ResponseEntity getTestQuestionSetQuestion(@PathVariable String studentId, @PathVariable String testQuestionSetId, @PathVariable String questionId, String type) {
+        try {
+            return lmsStudentService.getTestQuestionSetQuestion(studentId, testQuestionSetId, questionId, type);
+        } catch (Exception e) {
+            e.printStackTrace();
+            return new ResponseEntity<>(new ResponseModel(false, e.getMessage(), new JSONArray()), HttpStatus.EXPECTATION_FAILED);
+        }
+    }
+
